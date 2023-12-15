@@ -21,7 +21,7 @@
 
 use strict;
 use warnings;
-use DBI;
+#use DBI;
 use File::Basename;
 
 
@@ -68,17 +68,17 @@ my $max_plan_size = (100 * 1024);
 #  DBI_PASS environment variable, which is the most secure, but least
 #  convenient.
 my $dbpass = undef;
-my $dbpassfile = '/etc/IcculusFinger_dbpass.txt';
+my $dbpassfile = undef;
 
-my $dbname = 'IcculusFinger';
 my $dbtable_archive = 'finger_archive';
+my $dbfile = '/path/to/fingerdb';
 
 my $post_to_icculusnews = 1;
 my $newshost     = 'localhost';
 my $newsauthor   = 'fingermaster';
 my $newsposter   = '/usr/local/bin/IcculusNews_post.pl';
 my $newspass     = undef;
-my $newspassfile = '/etc/IcculusFinger_newspass.txt';
+my $newspassfile = undef;
 
 #-----------------------------------------------------------------------------#
 #     The rest is probably okay without you laying yer dirty mits on it.      #
@@ -181,7 +181,6 @@ sub get_sqldate {
 
 
 sub read_plantext {
-    my $link = shift;
     my $filename = shift;
     my $retval = '';
 
@@ -196,7 +195,6 @@ sub read_plantext {
 
 
 sub update_planfile {
-    my $link = shift;
     my $filename = shift;
 
     if (-d $filename) {
@@ -218,21 +216,18 @@ sub update_planfile {
     my $replace = 0;
     if ((defined $force_archive) and ($force_archive eq $user)) {
         print(" * Forcing archival of $user\'s .planfile...\n") if $debug;
-        $user = $link->quote($user);
+        $user = "'$user'";
         $replace = $replace_archive;
     } else {
         print(" * Examining $user\'s .planfile (modtime $fdate)...\n") if $debug;
 
-        $user = $link->quote($user);
+        $user = "'$user'";
 
         # ... get date of the latest archived .plan ...
         $sql = "select postdate, text from $dbtable_archive where username=$user" .
                " order by postdate desc limit 1";
-        my $sth = $link->prepare($sql);
-        $sth->execute() or die "can't execute the query: $sth->errstr";
 
-        my @row = $sth->fetchrow_array();
-        $sth->finish();
+        my @row = split('\|', qx(sqlite3 $dbfile "$sql"));
         if (not @row) {
             print("   Don't seem to have a previous entry ...\n") if $debug;
             if ( (stat($filename))[7] == 0 ) {
@@ -265,7 +260,7 @@ sub update_planfile {
                 print("   Matches archive timestamp. Skipping.\n") if $debug;
                 return;
             } else {
-                $plantext = read_plantext($link, $filename);
+                $plantext = read_plantext($filename);
                 my $plancpy = $plantext;
     	        # Ditch [noarchive][/noarchive] tag blocks and strcmp rest.
     	        1 while ($row[1] =~ s/\[noarchive\].*?\[\/noarchive\]//is);
@@ -280,7 +275,7 @@ sub update_planfile {
         }
     }
 
-    $plantext = read_plantext($link, $filename) if (not defined $plantext);
+    $plantext = read_plantext($filename) if (not defined $plantext);
 
     my $metadatastr = $plantext;
     my %metadata = ();
@@ -333,21 +328,21 @@ sub update_planfile {
     } 
 
     #print("SUMMARY: $summary\n"); exit(0);
+    #fix special characters for SQLite
+    $summary =~ s/'/''/g;
 
-    $summary = $link->quote($summary);
-
-    my $ftext = $link->quote($plantext);
+    $summary = "\'$summary\'";
+    my $ftext = $plantext;
+    $ftext =~ s/`/'/g;
+    $ftext =~ s/'/''/g;
+    $ftext = "'$ftext'";
 
     my $lastpost = undef;
     if ($replace) {
         # ... get date of the latest archived .plan ...
         $sql = "select postdate from $dbtable_archive where username=$user" .
                " order by postdate desc limit 1";
-        my $sth = $link->prepare($sql);
-        $sth->execute() or die "can't execute the query: $sth->errstr";
-
-        my @row = $sth->fetchrow_array();
-        $sth->finish();
+        my @row = split('\|', qx(sqlite3 $dbfile "$sql"));
         if (not @row) {
             $replace = 0;  # no previous entry.
         } else {
@@ -365,7 +360,7 @@ sub update_planfile {
                " values ($user, '$fdate', $summary, $ftext)";
     }
 
-    $link->do($sql) or die "can't execute the query: $link->errstr";
+    qx(sqlite3 $dbfile "$sql");
     print("   Revision added to archives.\n") if $debug;
 
     run_external_updater(basename($filename), $fdate, $plantext);
@@ -417,17 +412,10 @@ if ((not defined $newspass) && (not defined $ENV{'ICCNEWS_POST_PASS'})) {
     }
 }
 
-my $dsn = "DBI:mysql:database=$dbname;host=$dbhost";
-print(" * Connecting to [$dsn] ...\n") if $debug;
-
-my $link = DBI->connect($dsn, $dbuser, $dbpass, {'RaiseError' => 1});
-
 foreach (@planfiles) {
-    update_planfile($link, "$_");
+    update_planfile("$_");
 }
 
-$link->disconnect();
 exit 0;
 
 # end of IcculusFinger_archiveplans.pl ...
-

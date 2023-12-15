@@ -94,11 +94,11 @@
 
 use strict;          # don't touch this line, nootch.
 use warnings;        # don't touch this line, either.
-use DBI;             # or this. I guess. Maybe.
+#use DBI;             # or this. I guess. Maybe.
 use File::Basename;  # blow.
 use IO::Select;      # bleh.
 use POSIX;           # bloop.
-use Text::Markdown 'markdown';
+#use Text::Markdown 'markdown';
 
 
 # Version of IcculusFinger. Change this if you are forking the code.
@@ -290,7 +290,7 @@ my $debug = 0;
 #  final HTML output.
 #my $scripturl = undef;
 #my $scripturl = "/misc/finger.pl";
-my $scripturl = "https://icculus.org/IcculusFinger/";
+my $scripturl = "https://github.com/rohit-n/icculusfinger/";
 
 # This is only used in the HTML-formatted output.
 # I'd prefer you leave this be, but change it if you must.
@@ -303,32 +303,9 @@ my $html_credits = (defined $scripturl) ?
 my $text_credits = "Powered by IcculusFinger $version" .
                     ((defined $scripturl) ? " ($scripturl)" : "");
 
-
-# Set this to zero to disable planfile archive lookups.
-my $use_database = 1;
-
-# This is the host to connect to for database access.
-my $dbhost = 'localhost';
-
-# This is the username for the database connection.
-my $dbuser = 'fingermgr';
-
-# The database password can be entered in three ways: Either hardcode it into
-#  $dbpass, (which is a security risk, but is faster if you have a completely
-#  closed system), or leave $dbpass set to undef, in which case this script
-#  will try to read the password from the file specified in $dbpassfile (which
-#  means that this script and the database can be touched by anyone with read
-#  access to that file), or leave both undef to have DBI get the password from
-#  the DBI_PASS environment variable, which is the most secure, but least
-#  convenient.
-my $dbpass = undef;
-my $dbpassfile = '/etc/IcculusFinger_dbpass.txt';
-
-# The name of the database to use once connected to the database server.
-my $dbname = 'IcculusFinger';
-
 # The name of the table inside the database we're using.
 my $dbtable_archive = 'finger_archive';
+my $dbfile = '/path/to/fingerdb';
 
 # This is the time, in minutes, to generate a digest webpage of all available
 #  finger accounts. The digest includes last updated time and a link to the
@@ -891,44 +868,19 @@ sub parse_args {
     return($args);
 }
 
-
-sub get_database_link {
-    if (not defined $dbpass) {
-        if (defined $dbpassfile) {
-            open(FH, $dbpassfile) or return("failed to open $dbpassfile: $!\n");
-            $dbpass = <FH>;
-            chomp($dbpass);
-            $dbpass =~ s/\A\s*//;
-            $dbpass =~ s/\s*\Z//;
-            close(FH);
-        }
-    }
-
-    my $dsn = "DBI:mysql:database=$dbname;host=$dbhost";
-    $_[0] = DBI->connect($dsn, $dbuser, $dbpass) or
-                  return(DBI::errstr);
-    return(undef);
-}
-
-
 sub load_archive_list {
     my $user = shift;
-    my $link;
-    my $err = get_database_link($link);
-    return($err) if defined $err;
+    my $i = 0;
 
-    my $u = $link->quote($user);
+    my $u = "'$user'";
     my $sql = "select postdate, summary from $dbtable_archive where username=$u" .
               " order by postdate desc";
-    my $sth = $link->prepare($sql);
-    if (not $sth->execute()) {
-        $link->disconnect();
-        return "can't execute the query: $sth->errstr";
-    }
+    my @rows = split('\n', qx(sqlite3 $dbfile "$sql"));
 
     $output_text = "Available archives:\n";
     my $had_archives = 0;
-    while (my @row = $sth->fetchrow_array()) {
+    for ($i = 0 ; $i < scalar(@rows) ; $i++) {
+        my @row = split('\|', $rows[$i]);
         my ($dt, $summary) = @row;
         my ($d, $t) = $dt =~ /(\d\d\d\d-\d\d-\d\d) (\d\d:\d\d:\d\d)/;
         $t =~ s/(..):(..):(..)/$1-$2-$3/;
@@ -943,9 +895,6 @@ sub load_archive_list {
         $had_archives = 1;
     }
 
-    $sth->finish();
-    $link->disconnect();
-
     if (not $had_archives) {
         $output_text = '';  # will use $no_report_string.
     }
@@ -956,18 +905,13 @@ sub load_archive_list {
 
 sub output_oneuser_rss {
     my $user = shift;
-    my $link;
-    my $err = get_database_link($link);
-    return($err) if defined $err;
+    my $i = 0;
 
-    my $u = $link->quote($user);
+    my $u = "'$user'";
     my $sql = "select postdate, text, summary from $dbtable_archive where username=$u" .
               " order by postdate desc limit $oneuser_rss_items";
-    my $sth = $link->prepare($sql);
-    if (not $sth->execute()) {
-        $link->disconnect();
-        return "can't execute the query: $sth->errstr";
-    }
+
+    my @rows = split('\n', qx(sqlite3 $dbfile "$sql"));
 
     my $oneuser_rss_url = userurl($user, 'rss=1');
     $oneuser_rss_url =~ s/\&/&amp;/g;
@@ -977,7 +921,8 @@ sub output_oneuser_rss {
     my $rdfitems = "\n";
     my $digestitems = '';
     my $x = 0;
-    while (my @row = $sth->fetchrow_array()) {
+    for ($i = 0 ; $i < scalar(@rows) ; $i++) {
+        my @row = split('\|', $rows[$i]);
         my $dateandtime = $row[0];
         my ($d, $t) = ($dateandtime =~ /(\d\d\d\d-\d\d-\d\d) (\d\d:\d\d:\d\d)/);
         my ($hour, $min, $sec) = ($t =~ /(..):(..):(..)/);
@@ -1022,9 +967,6 @@ sub output_oneuser_rss {
     }
 
     $output_text = '';  # This is a global, so reset it just in case...
-
-    $sth->finish();
-    $link->disconnect();
 
     my $userlink = userurl($user);
     print <<__EOF__;
@@ -1093,20 +1035,10 @@ sub load_archive {
         $sqldate .= " 23:59:59";  # end of day.
     }
 
-    my $link;
-    my $err = get_database_link($link);
-    return($err) if defined $err;
-
-    my $u = $link->quote($user);
+    my $u = "'$user'";
     my $sql = "select postdate, text from $dbtable_archive where username=$u" .
               " and postdate<='$sqldate' order by postdate desc limit 1";
-    my $sth = $link->prepare($sql);
-    if (not $sth->execute()) {
-        $link->disconnect();
-        return "can't execute the query: $sth->errstr";
-    }
-
-    my @row = $sth->fetchrow_array();
+    my @row = split('\|', qx(sqlite3 $dbfile "$sql"));
     if (not @row) {
         $output_text = '';  # will use $no_report_string.
     } else {
@@ -1114,9 +1046,7 @@ sub load_archive {
         $archive_date = $row[0];
         $output_text = $row[1];
     }
-    $sth->finish();
 
-    $link->disconnect();
     return(undef);
 }
 
